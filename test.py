@@ -1,139 +1,118 @@
 import os
-import pandas as pd
 import re
+import pandas as pd
+
+# --- adjust these imports to your environment ---
 from docx import Document
+import camelot.io     # pip install camelot-py[cv]
+# optional: from tabula import read_pdf as tabula_read_pdf
 
-try:
-    import camelot.io as camelot
-    PDF_AVAILABLE = True
-except ImportError:
-    try:
-        import camelot
-        PDF_AVAILABLE = True
-    except ImportError:
-        camelot = None
-        PDF_AVAILABLE = False
+# -------------------------------------------------------------------
+def clean_column_name(col):
+    """Normalize a header string into a valid SQL identifier."""
+    c = re.sub(r'\s+', '_', col.strip())
+    c = re.sub(r'[^\w]', '', c)
+    c = c.upper()
+    if c and c[0].isdigit():
+        c = "C_" + c
+    return c or "COL"
 
-try:
-    import tabula
-    TABULA_AVAILABLE = True
-except ImportError:
-    tabula = None
-    TABULA_AVAILABLE = False
+def infer_sql_type(series: pd.Series) -> str:
+    """Map a pandas series dtype to a simple SQL type."""
+    import pandas.api.types as ptypes
+    if ptypes.is_integer_dtype(series):
+        return "INTEGER"
+    if ptypes.is_float_dtype(series):
+        return "DECIMAL(18,2)"
+    if ptypes.is_bool_dtype(series):
+        return "BOOLEAN"
+    if ptypes.is_datetime64_any_dtype(series):
+        return "TIMESTAMP"
+    # fallback to text
+    max_len = series.astype(str).str.len().max()
+    if max_len <= 50:
+        return "VARCHAR(50)"
+    if max_len <= 255:
+        return "VARCHAR(255)"
+    return "TEXT"
 
+# -------------------------------------------------------------------
 def extract_pdf_tables():
-    if not (PDF_AVAILABLE and os.path.exists("specification_document.pdf")):
-        return []
-    tables = camelot.read_pdf("specification_document.pdf", pages="all", flavor="lattice", strip_text='\n', split_text=True)
-    return [('pdf', i, table, table.accuracy) for i, table in enumerate(tables)]
+    """Return a list of ( 'pdf', idx, wrapper, accuracy, filename )."""
+    results = []
+    for fname in os.listdir('.'):
+        if not fname.lower().endswith('.pdf'):
+            continue
+        tables = camelot.io.read_pdf(fname, pages="all", flavor="lattice", strip_text='\n', split_text=True)
+        for i, table in enumerate(tables, start=1):
+            # wrap the camelot.Table so we have a consistent .df
+            wrapper = type("W", (), {"df": table.df, "source_file": fname, "table_index": i})
+            results.append(("pdf", i, wrapper, table.accuracy, fname))
+    return results
 
 def extract_docx_tables():
-    files = [f for f in os.listdir('.') if f.endswith('.docx') and not f.startswith('~')]
-    tables = []
-    for file in files:
-        doc = Document(file)
-        for i, t in enumerate(doc.tables):
-            data, max_cols = [], max(len(r.cells) for r in t.rows)
-            for row in t.rows:
-                row_data = [re.sub(r'\s+', ' ', c.text.strip().replace('\n', ' ')) if i < len(row.cells) else '' for i, c in enumerate(row.cells[:max_cols])]
-                data.append(row_data + [''] * (max_cols - len(row_data)))
-            if len(data) > 1:
-                df = pd.DataFrame(data[1:], columns=data[0]) if any(data[0]) else pd.DataFrame(data)
-                total = len(data) * max_cols
-                empty = sum(1 for r in data for c in r if not c)
-                non_empty_rows = sum(1 for r in data if any(c for c in r))
-                quality = ((total-empty)/total*60 + non_empty_rows/len(data)*30 + (max_cols>=2)*20*0.1)
-                tables.append(('docx', i, type('Wrapper', (), {'df': df, 'accuracy': quality, 'shape': df.shape, 'raw_data': data, 'source_file': file, 'table_index': i})(), quality, file))
-    return tables
+    """Return a list of ( 'docx', idx, wrapper, quality, filename )."""
+    results = []
+    for fname in os.listdir('.'):
+        if not fname.lower().endswith('.docx') or fname.startswith('~'):
+            continue
+        doc = Document(fname)
+        for i, tbl in enumerate(doc.tables, start=1):
+            # build DataFrame from rows
+            data = []
+            maxc = max(len(r.cells) for r in tbl.rows)
+            for row in tbl.rows:
+                cells = [re.sub(r'\s+', ' ', c.text.strip()) for c in row.cells]
+                cells += [""] * (maxc - len(cells))
+                data.append(cells)
+            if len(data) < 2:
+                continue
+            df = pd.DataFrame(data[1:], columns=data[0])
+            # crude quality: proportion filled
+            total = df.size
+            filled = df.astype(bool).sum().sum()
+            quality = filled / total
+            wrapper = type("W", (), {"df": df, "source_file": fname, "table_index": i})
+            results.append(("docx", i, wrapper, quality, fname))
+    return results
 
 def extract_best_tables():
-    docx_tables = extract_docx_tables()
-    pdf_tables = extract_pdf_tables()
-    all_tables = docx_tables + pdf_tables
-    return sorted(all_tables, key=lambda x: x[3], reverse=True)
+    all_tbls = extract_pdf_tables() + extract_docx_tables()
+    # sort by quality_score desc
+    return sorted(all_tbls, key=lambda x: x[3], reverse=True)
 
-def create_final_ddl():
-    with open("final_tables.sql", 'w') as f:
-        f.write("""CREATE TABLE column_mapping_specification (
-    source_column_name VARCHAR(100) NOT NULL,
-    source_datatype VARCHAR(50),
-    transformation_logic TEXT,
-    bmg_column_name VARCHAR(100) NOT NULL,
-    bmg_datatype VARCHAR(50) NOT NULL,
-    nullable_flag CHAR(1) DEFAULT 'Y',
-    business_name VARCHAR(200),
-    description TEXT,
-    pii_type VARCHAR(50),
-    encryption_category VARCHAR(50),
-    source_document VARCHAR(100),
-    PRIMARY KEY (source_column_name, bmg_column_name)
-);
+# -------------------------------------------------------------------
+def create_final_ddl(tables):
+    """Generate a final_ddl.sql containing one CREATE TABLE per extracted table."""
+    with open("final_ddl.sql", "w") as out:
+        for source_type, idx, wrapper, score, fname in tables:
+            df = wrapper.df.copy()
+            # if first row looks like headers, promote it
+            if any(cell.isalpha() for cell in df.iloc[0].astype(str)):
+                df.columns = df.iloc[0]
+                df = df.drop(df.index[0]).reset_index(drop=True)
+            # clean column names
+            df.columns = [ clean_column_name(col) for col in df.columns ]
+            # drop empty cols
+            df = df.dropna(how="all", axis=1)
+            if df.shape[1] < 1:
+                continue
 
-CREATE TABLE document_specification (
-    document_id VARCHAR(50) NOT NULL,
-    document_name VARCHAR(200) NOT NULL,
-    document_type VARCHAR(10) NOT NULL,
-    document_version VARCHAR(20),
-    extraction_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    table_count INTEGER DEFAULT 0,
-    quality_score DECIMAL(5,2),
-    file_size_bytes BIGINT,
-    page_count INTEGER,
-    processing_notes TEXT,
-    PRIMARY KEY (document_id)
-);
+            tblname = f"{os.path.splitext(fname)[0]}_{source_type}_{idx}"
+            tblname = tblname.upper().replace(".", "_").replace(" ", "_")
 
-CREATE TABLE transaction_field_specification (
-    field_name VARCHAR(100) NOT NULL,
-    source_field VARCHAR(100),
-    data_type VARCHAR(50) NOT NULL,
-    max_length INTEGER,
-    nullable_flag CHAR(1) DEFAULT 'Y',
-    business_description TEXT,
-    validation_rules TEXT,
-    notes TEXT,
-    source_document_id VARCHAR(50),
-    specification_section VARCHAR(100),
-    PRIMARY KEY (field_name)
-);
+            out.write(f"-- DDL for table #{idx} from {fname} ({source_type}, quality={score:.2f})\n")
+            out.write(f"CREATE TABLE {tblname} (\n")
+            cols_ddl = []
+            for col in df.columns:
+                sql_type = infer_sql_type(df[col])
+                cols_ddl.append(f"    {col} {sql_type}")
+            out.write(",\n".join(cols_ddl))
+            out.write("\n);\n\n")
 
-CREATE TABLE account_master (
-    acct_num DECIMAL(18,0) NOT NULL,
-    co_id SMALLINT NOT NULL,
-    acct_type_cd VARCHAR(10),
-    acct_status_cd VARCHAR(5) DEFAULT 'ACTV',
-    open_date DATE,
-    close_date DATE,
-    balance_amt DECIMAL(18,2) DEFAULT 0.00,
-    last_trans_date DATE,
-    specification_source VARCHAR(20) DEFAULT 'MULTI',
-    created_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (acct_num, co_id)
-);
+    print(f"✅ Written final_ddl.sql with {len(tables)} tables.")
 
-CREATE TABLE transaction_daily (
-    trans_seq_num INTEGER NOT NULL,
-    acct_num DECIMAL(18,0) NOT NULL,
-    co_id SMALLINT NOT NULL,
-    post_date DATE NOT NULL,
-    trans_date DATE NOT NULL,
-    trans_amt DECIMAL(18,2) NOT NULL,
-    trans_type_cd VARCHAR(10) NOT NULL,
-    trans_desc VARCHAR(255),
-    atm_surcharge_fee DECIMAL(18,2) DEFAULT 0.00,
-    card_num_encrypted VARCHAR(32),
-    appl_id CHAR(2) DEFAULT 'HD',
-    asof_yyyymm INTEGER NOT NULL,
-    specification_source VARCHAR(20) DEFAULT 'MULTI',
-    created_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (trans_seq_num, post_date)
-);
-""")
-
-def main():
-    tables = extract_best_tables()
-    create_final_ddl()
-
+# -------------------------------------------------------------------
 if __name__ == "__main__":
-    main()
+    best = extract_best_tables()
+    create_final_ddl(best)
