@@ -1,9 +1,9 @@
 -- ===============================================
 -- PRODUCTION-READY TABLE DDL STATEMENTS
--- Based on specification documents (PDF and DOCX analysis)
+-- Primary Source: DOCX Word documents
+-- Secondary Source: PDF documents (if available)
 -- Database: BMGPDD (Bank Management Production)
 -- Generated: 2025-06-26
--- Supports: PDF and DOCX specification sources
 -- ===============================================
 
 -- =============================================

@@ -1,8 +1,17 @@
-# Minimal Requirements - Latest Compatible Versions
-camelot-py[cv]
-tabula-py
+# DOCX-First Requirements - Essential Dependencies
+# Core functionality works with these packages only
+
+# DOCX Processing (Primary)
 python-docx
+
+# Data Processing 
 pandas
-ddlgenerator
-pdfplumber
 numpy
+
+# Optional: PDF Processing (requires system dependencies)
+# camelot-py[cv]
+# tabula-py
+
+# Optional: Enhanced features
+# ddlgenerator
+# pdfplumber

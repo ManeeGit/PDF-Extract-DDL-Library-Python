@@ -1,48 +1,84 @@
 import os
-import camelot
-import tabula
 import pandas as pd
 from docx import Document
 from docx.table import Table as DocxTable
 import re
 
+# Optional PDF processing - only if camelot is available
+try:
+    import camelot.io as camelot
+    PDF_AVAILABLE = True
+except ImportError:
+    try:
+        import camelot
+        PDF_AVAILABLE = True
+    except ImportError:
+        print("ℹ️  PDF processing not available. Install camelot-py[cv] for PDF support.")
+        camelot = None
+        PDF_AVAILABLE = False
+
+# Optional tabula for PDF backup
+try:
+    import tabula
+    TABULA_AVAILABLE = True
+except ImportError:
+    print("ℹ️  Tabula not available. Install tabula-py for additional PDF support.")
+    tabula = None
+    TABULA_AVAILABLE = False
+
 def extract_pdf_tables():
-    """Extract tables from PDF using camelot and tabula"""
+    """Extract tables from PDF using camelot and tabula (optional)"""
     PDF_FILE = "specification_document.pdf"
     
     if not os.path.exists(PDF_FILE):
-        print(f"❌ PDF file {PDF_FILE} not found")
+        print(f"ℹ️  PDF file {PDF_FILE} not found - focusing on DOCX files")
+        return []
+    
+    if not PDF_AVAILABLE:
+        print("ℹ️  PDF processing skipped - camelot not available")
         return []
     
     print(f"🔍 Extracting tables from PDF: {PDF_FILE}")
     
-    # Use only the most reliable method - Camelot Lattice
-    tables = camelot.read_pdf(PDF_FILE, pages="all", flavor="lattice", 
-                            strip_text='\n', split_text=True)
-    
-    print(f"Found {len(tables)} tables with Camelot Lattice")
-    
-    # Analyze and rank tables by accuracy
-    table_quality = []
-    for i, table in enumerate(tables):
-        quality_score = table.accuracy
-        print(f"PDF Table {i+1}: Shape {table.shape}, Accuracy: {quality_score:.1f}%")
-        table_quality.append(('pdf', i, table, quality_score))
-    
-    return table_quality
+    try:
+        # Use only the most reliable method - Camelot Lattice
+        tables = camelot.read_pdf(PDF_FILE, pages="all", flavor="lattice", 
+                                strip_text='\n', split_text=True)
+        
+        print(f"Found {len(tables)} tables with Camelot Lattice")
+        
+        # Analyze and rank tables by accuracy
+        table_quality = []
+        for i, table in enumerate(tables):
+            quality_score = table.accuracy
+            print(f"PDF Table {i+1}: Shape {table.shape}, Accuracy: {quality_score:.1f}%")
+            table_quality.append(('pdf', i, table, quality_score))
+        
+        return table_quality
+        
+    except AttributeError as e:
+        print(f"⚠️  PDF processing error: {e}")
+        print("💡 Continuing with DOCX processing only...")
+        return []
+    except Exception as e:
+        print(f"⚠️  Error extracting PDF tables: {e}")
+        print("💡 Continuing with DOCX processing only...")
+        return []
 
 def extract_docx_tables():
-    """Extract tables from DOCX files"""
-    docx_files = [f for f in os.listdir('.') if f.endswith('.docx')]
+    """Extract tables from DOCX files with enhanced processing"""
+    docx_files = [f for f in os.listdir('.') if f.endswith('.docx') and not f.startswith('~')]
     
     if not docx_files:
         print("ℹ️  No DOCX files found in current directory")
+        print("💡 Place your .docx specification files in this directory")
         return []
     
+    print(f"📝 Found {len(docx_files)} DOCX file(s): {', '.join(docx_files)}")
     all_tables = []
     
     for docx_file in docx_files:
-        print(f"🔍 Extracting tables from DOCX: {docx_file}")
+        print(f"\n🔍 Extracting tables from DOCX: {docx_file}")
         
         try:
             doc = Document(docx_file)
@@ -51,70 +87,117 @@ def extract_docx_tables():
             print(f"Found {len(tables)} tables in {docx_file}")
             
             for i, table in enumerate(tables):
-                # Convert DOCX table to pandas DataFrame
+                # Convert DOCX table to pandas DataFrame with enhanced processing
                 data = []
+                max_cols = 0
+                
+                # First pass: determine maximum columns
                 for row in table.rows:
+                    max_cols = max(max_cols, len(row.cells))
+                
+                # Second pass: extract data with consistent column count
+                for row_idx, row in enumerate(table.rows):
                     row_data = []
-                    for cell in row.cells:
-                        # Clean cell text
-                        cell_text = cell.text.strip().replace('\n', ' ').replace('\r', '')
-                        row_data.append(cell_text)
+                    for col_idx in range(max_cols):
+                        if col_idx < len(row.cells):
+                            cell = row.cells[col_idx]
+                            # Enhanced cell text cleaning
+                            cell_text = cell.text.strip()
+                            cell_text = re.sub(r'\s+', ' ', cell_text)  # Normalize whitespace
+                            cell_text = cell_text.replace('\n', ' ').replace('\r', '')
+                            row_data.append(cell_text)
+                        else:
+                            row_data.append('')  # Fill missing cells
                     data.append(row_data)
                 
-                if data:
-                    # Create DataFrame
-                    df = pd.DataFrame(data)
+                if data and len(data) > 1:  # At least header + 1 data row
+                    # Create DataFrame with first row as header if it looks like a header
+                    first_row = data[0]
+                    if any(cell.strip() for cell in first_row):  # Non-empty first row
+                        df = pd.DataFrame(data[1:], columns=data[0])
+                    else:
+                        df = pd.DataFrame(data)
                     
-                    # Calculate a quality score based on data completeness
-                    total_cells = len(data) * len(data[0]) if data else 0
+                    # Calculate enhanced quality score
+                    total_cells = len(data) * max_cols
                     empty_cells = sum(1 for row in data for cell in row if not cell.strip())
-                    quality_score = ((total_cells - empty_cells) / total_cells * 100) if total_cells > 0 else 0
+                    non_empty_rows = sum(1 for row in data if any(cell.strip() for cell in row))
+                    
+                    # Quality factors
+                    completeness = ((total_cells - empty_cells) / total_cells * 100) if total_cells > 0 else 0
+                    row_density = (non_empty_rows / len(data) * 100) if data else 0
+                    column_consistency = (max_cols >= 2) * 20  # Bonus for multi-column tables
+                    
+                    quality_score = (completeness * 0.6 + row_density * 0.3 + column_consistency * 0.1)
                     
                     print(f"DOCX Table {i+1}: Shape {df.shape}, Quality: {quality_score:.1f}%")
+                    print(f"  └─ Completeness: {completeness:.1f}%, Row Density: {row_density:.1f}%")
                     
                     # Create a table-like object similar to camelot
                     class DocxTableWrapper:
-                        def __init__(self, df, quality):
+                        def __init__(self, df, quality, raw_data, file_name, table_idx):
                             self.df = df
                             self.accuracy = quality
                             self.shape = df.shape
+                            self.raw_data = raw_data
+                            self.source_file = file_name
+                            self.table_index = table_idx
                     
-                    wrapped_table = DocxTableWrapper(df, quality_score)
+                    wrapped_table = DocxTableWrapper(df, quality_score, data, docx_file, i)
                     all_tables.append(('docx', i, wrapped_table, quality_score, docx_file))
+                else:
+                    print(f"DOCX Table {i+1}: Skipped (insufficient data)")
                     
         except Exception as e:
             print(f"❌ Error processing {docx_file}: {str(e)}")
+            print(f"   Make sure the file is not open in Word and is a valid .docx file")
     
     return all_tables
 
 def extract_best_tables():
-    """Extract tables from both PDF and DOCX files and focus on the highest quality ones"""
-    print("🔍 Extracting tables from PDF and DOCX files with focus on quality...")
+    """Extract tables from DOCX files (primary) and PDF files (optional)"""
+    print("🔍 Extracting tables with focus on DOCX files...")
+    print("=" * 60)
     
-    # Extract from PDF
-    pdf_tables = extract_pdf_tables()
-    
-    # Extract from DOCX
+    # Extract from DOCX first (primary method)
+    print("\n📝 DOCX Processing:")
     docx_tables = extract_docx_tables()
     
+    # Extract from PDF (optional, fallback method)
+    print("\n📄 PDF Processing:")
+    pdf_tables = extract_pdf_tables()
+    
     # Combine all tables
-    all_tables = pdf_tables + docx_tables
+    all_tables = docx_tables + pdf_tables
     
     if not all_tables:
-        print("❌ No tables found in any files")
+        print("\n⚠️  No tables found in any files")
+        print("💡 Make sure you have:")
+        print("   - .docx files with tables in this directory")
+        print("   - Proper file permissions (files not open in Word)")
         return []
     
     # Sort by quality (highest first)
     all_tables.sort(key=lambda x: x[3], reverse=True)
     
-    print(f"\n📊 Total tables found: {len(all_tables)}")
-    print("🏆 Top quality tables:")
-    for i, table_info in enumerate(all_tables[:5]):  # Show top 5
+    print(f"\n📊 EXTRACTION SUMMARY:")
+    print(f"📝 DOCX tables found: {len(docx_tables)}")
+    print(f"📄 PDF tables found: {len(pdf_tables)}")
+    print(f"🏆 Total high-quality tables: {len(all_tables)}")
+    
+    print(f"\n🏆 Top quality tables:")
+    for i, table_info in enumerate(all_tables[:10]):  # Show top 10
         file_type = table_info[0]
         table_idx = table_info[1]
         quality = table_info[3]
         file_name = table_info[4] if len(table_info) > 4 else "specification_document.pdf"
-        print(f"  {i+1}. {file_type.upper()} Table {table_idx+1} from {file_name}: {quality:.1f}%")
+        
+        # Show shape if available
+        shape_info = ""
+        if hasattr(table_info[2], 'shape'):
+            shape_info = f" [{table_info[2].shape[0]}x{table_info[2].shape[1]}]"
+        
+        print(f"  {i+1:2d}. {file_type.upper():4s} Table {table_idx+1} from {file_name}: {quality:.1f}%{shape_info}")
     
     return all_tables
 
@@ -405,23 +488,37 @@ COMMENT ON VIEW v_column_mapping_summary IS 'Summary statistics of column mappin
     return tables_ddl, views_ddl
 
 def main():
-    """Generate final clean DDL based on PDF and DOCX specification analysis"""
-    print("🚀 Generating Final Clean DDL from PDF and DOCX Files")
+    """Generate final clean DDL with primary focus on DOCX files"""
+    print("🚀 DOCX-First Table Extraction and DDL Generator")
+    print("=" * 60)
+    print("📝 Primary: DOCX Word documents (.docx)")
+    print("📄 Secondary: PDF documents (.pdf) - if available")
     print("=" * 60)
     
-    # Extract tables for reference from both PDF and DOCX
+    # Extract tables with DOCX priority
     all_tables = extract_best_tables()
     
     if all_tables:
-        print(f"\n📊 Analysis complete. Found tables in:")
-        pdf_count = len([t for t in all_tables if t[0] == 'pdf'])
+        print(f"\n📊 ANALYSIS COMPLETE:")
         docx_count = len([t for t in all_tables if t[0] == 'docx'])
-        print(f"  📄 PDF files: {pdf_count} tables")
-        print(f"  📝 DOCX files: {docx_count} tables")
+        pdf_count = len([t for t in all_tables if t[0] == 'pdf'])
+        print(f"  � DOCX tables: {docx_count}")
+        print(f"  📄 PDF tables: {pdf_count}")
+        print(f"  🎯 Primary source: {'DOCX' if docx_count >= pdf_count else 'PDF'}")
+        
+        # Show sample data from best table
+        if docx_count > 0:
+            best_docx = next((t for t in all_tables if t[0] == 'docx'), None)
+            if best_docx and hasattr(best_docx[2], 'raw_data'):
+                print(f"\n📋 Sample from best DOCX table:")
+                sample_data = best_docx[2].raw_data[:3]  # First 3 rows
+                for i, row in enumerate(sample_data):
+                    print(f"  Row {i+1}: {row[:3]}")  # First 3 columns
     else:
         print("\n⚠️  No tables found, but proceeding with template DDL structure...")
+        print("💡 For best results, add .docx files with tables to this directory")
     
-    print(f"\n🏗️  Creating clean DDL based on specification analysis...")
+    print(f"\n🏗️  Creating production-ready DDL based on specification analysis...")
     
     # Generate clean, production-ready DDL
     tables_ddl, views_ddl = create_final_ddl()
@@ -430,10 +527,10 @@ def main():
     with open("final_tables.sql", 'w') as f:
         f.write("""-- ===============================================
 -- PRODUCTION-READY TABLE DDL STATEMENTS
--- Based on specification documents (PDF and DOCX analysis)
+-- Primary Source: DOCX Word documents
+-- Secondary Source: PDF documents (if available)
 -- Database: BMGPDD (Bank Management Production)
 -- Generated: 2025-06-26
--- Supports: PDF and DOCX specification sources
 -- ===============================================
 
 """)
@@ -481,30 +578,30 @@ CREATE INDEX idx_trans_field_nullable ON transaction_field_specification(nullabl
     with open("final_views.sql", 'w') as f:
         f.write("""-- ===============================================
 -- PRODUCTION-READY VIEW DDL STATEMENTS
--- Based on specification documents (PDF and DOCX analysis)
+-- Primary Source: DOCX Word documents
+-- Secondary Source: PDF documents (if available)
 -- Database: BMGPDD (Bank Management Production)
 -- Generated: 2025-06-26
--- Supports: PDF and DOCX specification sources
 -- ===============================================
 
 """)
         for ddl in views_ddl:
             f.write(ddl + "\n")
     
-    print(f"\n🎉 Generated production-ready DDL files with PDF and DOCX support:")
+    print(f"\n🎉 SUCCESS! Generated production-ready DDL files:")
     print(f"📁 final_tables.sql - Clean, structured table definitions")
-    print(f"📁 final_views.sql - Proper view definitions with business logic")
-    print(f"\n✨ Enhanced features:")
-    print(f"   📄 PDF table extraction using Camelot")
-    print(f"   📝 DOCX table extraction using python-docx")
-    print(f"   🔍 Quality scoring for both file types")
-    print(f"   📊 Document tracking and metadata")
-    print(f"   🔗 Cross-reference support between specifications")
-    print(f"\n✅ Ready for:")
+    print(f"📁 final_views.sql - Business logic views with document tracking")
+    print(f"\n✨ DOCX-FIRST FEATURES:")
+    print(f"   📝 Enhanced DOCX table extraction")
+    print(f"   🔍 Smart quality scoring")
+    print(f"   📊 Document metadata tracking")
+    print(f"   🏗️ Production-ready DDL structure")
+    print(f"   � Optional PDF support (when libraries available)")
+    print(f"\n✅ READY FOR:")
     print(f"   ✅ Database implementation")
     print(f"   ✅ Code review")
     print(f"   ✅ Production deployment")
-    print(f"   ✅ Multi-format specification processing")
+    print(f"   ✅ DOCX-based specification processing")
 
 if __name__ == "__main__":
     main()
