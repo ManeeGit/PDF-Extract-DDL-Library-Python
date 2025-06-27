@@ -1,0 +1,8 @@
+# Minimal Requirements - Latest Compatible Versions
+camelot-py[cv]
+tabula-py
+python-docx
+pandas
+ddlgenerator
+pdfplumber
+numpy

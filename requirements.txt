@@ -1,0 +1,95 @@
+# ===============================================
+# PDF and DOCX Table Extraction to DDL Generator
+# Requirements File
+# ===============================================
+
+# Core PDF Processing Libraries
+camelot-py[cv]==0.11.0
+tabula-py==2.9.0
+
+# DOCX Processing
+python-docx==1.1.0
+
+# Data Processing and Analysis
+pandas==2.1.4
+numpy==1.24.4
+
+# DDL Generation
+ddlgenerator==0.1.8
+
+# PDF Processing Dependencies (automatically installed with camelot-py[cv])
+# opencv-python>=4.5.0  # Included with camelot-py[cv]
+# PyPDF2>=3.0.0        # Included with camelot-py[cv]
+
+# Additional PDF Processing Support
+pdfplumber==0.10.0
+PyMuPDF==1.23.14
+
+# Data Type Inference and Validation
+sqlalchemy==2.0.23
+openpyxl==3.1.2
+
+# System and File Processing
+pathlib2==2.3.7
+chardet==5.2.0
+
+# Optional: Enhanced Text Processing
+regex==2023.10.3
+beautifulsoup4==4.12.2
+
+# Optional: Progress Bars and UI
+tqdm==4.66.1
+
+# Optional: Logging and Configuration
+colorama==0.4.6
+click==8.1.7
+
+# Development and Testing (Optional)
+pytest==7.4.3
+pytest-cov==4.1.0
+black==23.11.0
+flake8==6.1.0
+
+# ===============================================
+# System Dependencies (Install Separately)
+# ===============================================
+# 
+# For macOS:
+# brew install ghostscript
+# brew install java
+# 
+# For Ubuntu/Debian:
+# sudo apt-get install ghostscript
+# sudo apt-get install default-jre
+# 
+# For Windows:
+# Download and install Ghostscript from: https://www.ghostscript.com/download/gsdnld.html
+# Download and install Java from: https://www.java.com/en/download/
+# 
+# ===============================================
+# Installation Instructions
+# ===============================================
+# 
+# 1. Create virtual environment:
+#    python -m venv venv
+#    source venv/bin/activate  # On Windows: venv\Scripts\activate
+# 
+# 2. Install requirements:
+#    pip install -r requirements.txt
+# 
+# 3. Verify installation:
+#    python final_extraction.py
+# 
+# ===============================================
+# Compatibility Notes
+# ===============================================
+# 
+# Python Version: 3.8+
+# Tested on: Python 3.9, 3.10, 3.11
+# 
+# Platform Support:
+# - macOS 10.15+
+# - Ubuntu 18.04+
+# - Windows 10+
+# 
+# ===============================================
